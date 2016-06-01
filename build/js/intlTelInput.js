@@ -1,13 +1,15 @@
 /*
-International Telephone Input v6.0.0
+International Telephone Input v6.4.3
 https://github.com/Bluefieldscom/intl-tel-input.git
 */
-// wrap in UMD - see https://github.com/umdjs/umd/blob/master/jqueryPlugin.js
+// wrap in UMD - see https://github.com/umdjs/umd/blob/master/jqueryPluginCommonjs.js
 (function(factory) {
     if (typeof define === "function" && define.amd) {
         define([ "jquery" ], function($) {
             factory($, window, document);
         });
+    } else if (typeof module === "object" && module.exports) {
+        module.exports = factory(require("jquery"), window, document);
     } else {
         factory(jQuery, window, document);
     }
@@ -20,12 +22,16 @@ https://github.com/Bluefieldscom/intl-tel-input.git
         allowExtensions: false,
         // automatically format the number according to the selected country
         autoFormat: true,
-        // add or remove input placeholder with an example number for the selected country
-        autoPlaceholder: true,
         // if there is just a dial code in the input: remove it on blur, and re-add it on focus
         autoHideDialCode: true,
+        // add or remove input placeholder with an example number for the selected country
+        autoPlaceholder: true,
         // default country
         defaultCountry: "",
+        // append menu to a specific element
+        dropdownContainer: false,
+        // don't display these countries
+        excludeCountries: [],
         // geoIp lookup function
         geoIpLookup: null,
         // don't insert international dial codes
@@ -82,6 +88,8 @@ https://github.com/Bluefieldscom/intl-tel-input.git
             if (navigator.userAgent.match(/IEMobile/i)) {
                 this.options.autoFormat = false;
             }
+            // initialize countries list
+            this.initCountriesList();
             // we cannot just test screen size as some smartphones/website meta tags will report desktop resolutions
             // Note: for some reason jasmine fucks up if you put this in the main Plugin function with the rest of these declarations
             // Note: to target Android Mobiles (and not Tablets), we must find "Android" and "Mobile"
@@ -90,7 +98,7 @@ https://github.com/Bluefieldscom/intl-tel-input.git
             // Note: again, jasmine had a spazz when I put these in the Plugin function
             this.autoCountryDeferred = new $.Deferred();
             this.utilsScriptDeferred = new $.Deferred();
-            // process all the data: onlyCountries, preferredCountries etc
+            // process all the data: onlyCountries, excludeCountries, preferredCountries etc
             this._processCountryData();
             // generate the markup
             this._generateMarkup();
@@ -106,7 +114,7 @@ https://github.com/Bluefieldscom/intl-tel-input.git
         /********************
    *  PRIVATE METHODS
    ********************/
-        // prepare all of the country data, including onlyCountries and preferredCountries options
+        // prepare all of the country data, including onlyCountries, excludeCountries and preferredCountries options
         _processCountryData: function() {
             // set the instances country data objects
             this._setInstanceCountryData();
@@ -121,28 +129,40 @@ https://github.com/Bluefieldscom/intl-tel-input.git
             var index = priority || 0;
             this.countryCodes[dialCode][index] = iso2;
         },
-        // process onlyCountries array if present, and generate the countryCodes map
-        _setInstanceCountryData: function() {
+        // process countries
+        processCountries: function(countryArray, processFunc) {
             var i;
+            // standardise case
+            for (i = 0; i < countryArray.length; i++) {
+                countryArray[i] = countryArray[i].toLowerCase();
+            }
+            // build instance country array
+            this.countries = [];
+            for (i = 0; i < allCountries.length; i++) {
+                if (processFunc($.inArray(allCountries[i].iso2, countryArray))) {
+                    this.countries.push(allCountries[i]);
+                }
+            }
+        },
+        // process onlyCountries or excludeCountries array if present, and generate the countryCodes map
+        _setInstanceCountryData: function() {
             // process onlyCountries option
             if (this.options.onlyCountries.length) {
-                // standardise case
-                for (i = 0; i < this.options.onlyCountries.length; i++) {
-                    this.options.onlyCountries[i] = this.options.onlyCountries[i].toLowerCase();
-                }
-                // build instance country array
-                this.countries = [];
-                for (i = 0; i < allCountries.length; i++) {
-                    if ($.inArray(allCountries[i].iso2, this.options.onlyCountries) != -1) {
-                        this.countries.push(allCountries[i]);
-                    }
-                }
+                this.processCountries(this.options.onlyCountries, function(inArray) {
+                    // if country is in array
+                    return inArray != -1;
+                });
+            } else if (this.options.excludeCountries.length) {
+                this.processCountries(this.options.excludeCountries, function(inArray) {
+                    // if country is not in array
+                    return inArray == -1;
+                });
             } else {
                 this.countries = allCountries;
             }
             // generate countryCodes map
             this.countryCodes = {};
-            for (i = 0; i < this.countries.length; i++) {
+            for (var i = 0; i < this.countries.length; i++) {
                 var c = this.countries[i];
                 this._addCountryCode(c.iso2, c.dialCode, c.priority);
                 // area codes
@@ -176,7 +196,7 @@ https://github.com/Bluefieldscom/intl-tel-input.git
                 "class": "intl-tel-input"
             }));
             this.flagsContainer = $("<div>", {
-                "class": "flag-dropdown"
+                "class": "flag-container"
             }).insertBefore(this.telInput);
             // currently selected flag (displayed to left of input)
             var selectedFlag = $("<div>", {
@@ -200,8 +220,8 @@ https://github.com/Bluefieldscom/intl-tel-input.git
                 }).appendTo(this.flagsContainer);
             } else {
                 this.countryList = $("<ul>", {
-                    "class": "country-list v-hide"
-                }).appendTo(this.flagsContainer);
+                    "class": "country-list hide"
+                });
                 if (this.preferredCountries.length && !this.isMobile) {
                     this._appendListItems(this.preferredCountries, "preferred");
                     $("<li>", {
@@ -211,11 +231,16 @@ https://github.com/Bluefieldscom/intl-tel-input.git
             }
             this._appendListItems(this.countries, "");
             if (!this.isMobile) {
-                // now we can grab the dropdown height, and hide it properly
-                this.dropdownHeight = this.countryList.outerHeight();
-                this.countryList.removeClass("v-hide").addClass("hide");
                 // this is useful in lots of places
                 this.countryListItems = this.countryList.children(".country");
+                // create dropdownContainer markup
+                if (this.options.dropdownContainer) {
+                    this.dropdown = $("<div>", {
+                        "class": "intl-tel-input iti-container"
+                    }).append(this.countryList);
+                } else {
+                    this.countryList.appendTo(this.flagsContainer);
+                }
             }
         },
         // add a country <li> to the countryList <ul> container
@@ -347,7 +372,7 @@ https://github.com/Bluefieldscom/intl-tel-input.git
         _loadAutoCountry: function() {
             var that = this;
             // check for cookie
-            var cookieAutoCountry = $.cookie ? $.cookie("itiAutoCountry") : "";
+            var cookieAutoCountry = window.Cookies ? Cookies.get("itiAutoCountry") : "";
             if (cookieAutoCountry) {
                 $.fn[pluginName].autoCountry = cookieAutoCountry;
             }
@@ -363,14 +388,17 @@ https://github.com/Bluefieldscom/intl-tel-input.git
                 if (typeof this.options.geoIpLookup === "function") {
                     this.options.geoIpLookup(function(countryCode) {
                         $.fn[pluginName].autoCountry = countryCode.toLowerCase();
-                        if ($.cookie) {
-                            $.cookie("itiAutoCountry", $.fn[pluginName].autoCountry, {
+                        if (window.Cookies) {
+                            Cookies.set("itiAutoCountry", $.fn[pluginName].autoCountry, {
                                 path: "/"
                             });
                         }
                         // tell all instances the auto country is ready
                         // TODO: this should just be the current instances
-                        $(".intl-tel-input input").intlTelInput("autoCountryLoaded");
+                        // UPDATE: use setTimeout in case their geoIpLookup function calls this callback straight away (e.g. if they have already done the geo ip lookup somewhere else). Using setTimeout means that the current thread of execution will finish before executing this, which allows the plugin to finish initialising.
+                        setTimeout(function() {
+                            $(".intl-tel-input input").intlTelInput("autoCountryLoaded");
+                        });
                     });
                 }
             }
@@ -619,8 +647,6 @@ https://github.com/Bluefieldscom/intl-tel-input.git
             if (activeListItem.length) {
                 this._highlightListItem(activeListItem);
             }
-            // show it
-            this.countryList.removeClass("hide");
             if (activeListItem.length) {
                 this._scrollTo(activeListItem);
             }
@@ -631,11 +657,28 @@ https://github.com/Bluefieldscom/intl-tel-input.git
         },
         // decide where to position dropdown (depends on position within viewport, and scroll)
         _setDropdownPosition: function() {
-            var inputTop = this.telInput.offset().top, windowTop = $(window).scrollTop(), // dropdownFitsBelow = (dropdownBottom < windowBottom)
+            var showDropdownContainer = this.options.dropdownContainer && !this.isMobile;
+            if (showDropdownContainer) this.dropdown.appendTo(this.options.dropdownContainer);
+            // show the menu and grab the dropdown height
+            this.dropdownHeight = this.countryList.removeClass("hide").outerHeight();
+            var that = this, pos = this.telInput.offset(), inputTop = pos.top, windowTop = $(window).scrollTop(), // dropdownFitsBelow = (dropdownBottom < windowBottom)
             dropdownFitsBelow = inputTop + this.telInput.outerHeight() + this.dropdownHeight < windowTop + $(window).height(), dropdownFitsAbove = inputTop - this.dropdownHeight > windowTop;
-            // dropdownHeight - 1 for border
-            var cssTop = !dropdownFitsBelow && dropdownFitsAbove ? "-" + (this.dropdownHeight - 1) + "px" : "";
-            this.countryList.css("top", cssTop);
+            // by default, the dropdown will be below the input. If we want to position it above the input, we add the dropup class.
+            this.countryList.toggleClass("dropup", !dropdownFitsBelow && dropdownFitsAbove);
+            // if dropdownContainer is enabled, calculate postion
+            if (showDropdownContainer) {
+                // by default the dropdown will be directly over the input because it's not in the flow. If we want to position it below, we need to add some extra top value.
+                var extraTop = !dropdownFitsBelow && dropdownFitsAbove ? 0 : this.telInput.innerHeight();
+                // calculate placement
+                this.dropdown.css({
+                    top: inputTop + extraTop,
+                    left: pos.left
+                });
+                // close menu on window scroll
+                $(window).on("scroll" + this.ns, function() {
+                    that._closeDropdown();
+                });
+            }
         },
         // we only bind dropdown listeners when the dropdown is open
         _bindDropdownListeners: function() {
@@ -847,6 +890,9 @@ https://github.com/Bluefieldscom/intl-tel-input.git
         _updatePlaceholder: function() {
             if (window.intlTelInputUtils && !this.hadInitialPlaceholder && this.options.autoPlaceholder && this.selectedCountryData) {
                 var iso2 = this.selectedCountryData.iso2, numberType = intlTelInputUtils.numberType[this.options.numberType || "FIXED_LINE"], placeholder = iso2 ? intlTelInputUtils.getExampleNumber(iso2, this.options.nationalMode, numberType) : "";
+                if (typeof this.options.customPlaceholder === "function") {
+                    placeholder = this.options.customPlaceholder(placeholder, this.selectedCountryData);
+                }
                 this.telInput.attr("placeholder", placeholder);
             }
         },
@@ -880,6 +926,11 @@ https://github.com/Bluefieldscom/intl-tel-input.git
             $("html").off(this.ns);
             // unbind hover and click listeners
             this.countryList.off(this.ns);
+            // remove menu from container
+            if (this.options.dropdownContainer && !this.isMobile) {
+                $(window).off("scroll" + this.ns);
+                this.dropdown.detach();
+            }
         },
         // check if an element is visible within it's container, else scroll until it is
         _scrollTo: function(element, middle) {
@@ -1025,22 +1076,21 @@ https://github.com/Bluefieldscom/intl-tel-input.git
         loadUtils: function(path) {
             var that = this;
             var utilsScript = path || this.options.utilsScript;
-            if (!$.fn[pluginName].loadedUtilsScript && utilsScript) {
-                // don't do this twice! (dont just check if the global intlTelInputUtils exists as if init plugin multiple times in quick succession, it may not have finished loading yet)
-                $.fn[pluginName].loadedUtilsScript = true;
-                // dont use $.getScript as it prevents caching
-                $.ajax({
-                    url: utilsScript,
-                    success: function() {
-                        // tell all instances the utils are ready
-                        $(".intl-tel-input input").intlTelInput("utilsLoaded");
-                    },
-                    complete: function() {
-                        that.utilsScriptDeferred.resolve();
-                    },
-                    dataType: "script",
-                    cache: true
-                });
+            if (utilsScript) {
+                if (!$.fn[pluginName].loadedUtilsScript) {
+                    // don't do this twice! (dont just check if the global intlTelInputUtils exists as if init plugin multiple times in quick succession, it may not have finished loading yet)
+                    $.fn[pluginName].loadedUtilsScript = true;
+                    // dont use $.getScript as it prevents caching
+                    $.ajax({
+                        url: utilsScript,
+                        complete: function() {
+                            // tell all instances that the utils request is complete
+                            $(".intl-tel-input input").intlTelInput("utilsRequestComplete");
+                        },
+                        dataType: "script",
+                        cache: true
+                    });
+                }
             } else {
                 this.utilsScriptDeferred.resolve();
             }
@@ -1064,14 +1114,33 @@ https://github.com/Bluefieldscom/intl-tel-input.git
             this._updateFlagFromNumber(number);
             this._updateVal(number, format, addSuffix, preventConversion, isAllowedKey);
         },
-        // this is called when the utils are ready
-        utilsLoaded: function() {
-            // if autoFormat is enabled and there's an initial value in the input, then format it
-            if (this.options.autoFormat && this.telInput.val()) {
-                this._updateVal(this.telInput.val());
+        // this is called when the utils request completes
+        utilsRequestComplete: function() {
+            // if the request was successful
+            if (window.intlTelInputUtils) {
+                // if autoFormat is enabled and there's an initial value in the input, then format it
+                if (this.options.autoFormat && this.telInput.val()) {
+                    this._updateVal(this.telInput.val());
+                }
+                this._updatePlaceholder();
             }
-            this._updatePlaceholder();
-        }
+            this.utilsScriptDeferred.resolve();
+        },
+        // this is called when countries must be initialized
+        initCountriesList: function() {
+                allCountries = this.options.language ? allCountriesLang[this.options.language] : allCountriesDefault;
+                // loop over all of the countries above
+                for (var i = 0; i < allCountries.length; i++) {
+                    var c = allCountries[i];
+                    allCountries[i] = {
+                        name: c[0],
+                        iso2: c[1],
+                        dialCode: c[2],
+                        priority: c[3] || 0,
+                        areaCodes: c[4] || null
+                    };
+                }
+        },
     };
     // adapted to allow public functions
     // using https://github.com/jquery-boilerplate/jquery-boilerplate/wiki/Extending-jQuery-Boilerplate
@@ -1125,35 +1194,33 @@ https://github.com/Bluefieldscom/intl-tel-input.git
     $.fn[pluginName].getCountryData = function() {
         return allCountries;
     };
+    $.fn[pluginName].version = "6.4.3";
     // Tell JSHint to ignore this warning: "character may get silently deleted by one or more browsers"
     // jshint -W100
     // Array of country objects for the flag dropdown.
     // Each contains a name, country code (ISO 3166-1 alpha-2) and dial code.
     // Originally from https://github.com/mledoze/countries
-    // then modified using the following JavaScript (NOW OUT OF DATE):
-    /*
-var result = [];
-_.each(countries, function(c) {
-  // ignore countries without a dial code
-  if (c.callingCode[0].length) {
-    result.push({
-      // var locals contains country names with localised versions in brackets
-      n: _.findWhere(locals, {
-        countryCode: c.cca2
-      }).name,
-      i: c.cca2.toLowerCase(),
-      d: c.callingCode[0]
-    });
-  }
-});
-JSON.stringify(result);
-*/
     // then with a couple of manual re-arrangements to be alphabetical
     // then changed Kazakhstan from +76 to +7
     // and Vatican City from +379 to +39 (see issue 50)
     // and Caribean Netherlands from +5997 to +599
     // and Curacao from +5999 to +599
-    // Removed: Åland Islands, Christmas Island, Cocos Islands, Guernsey, Isle of Man, Jersey, Kosovo, Mayotte, Pitcairn Islands, South Georgia, Svalbard, Western Sahara
+    // Removed:  Kosovo, Pitcairn Islands, South Georgia
+    // UPDATE Sept 12th 2015
+    // List of regions that have iso2 country codes, which I have chosen to omit:
+    // (based on this information: https://en.wikipedia.org/wiki/List_of_country_calling_codes)
+    // AQ - Antarctica - all different country codes depending on which "base"
+    // BV - Bouvet Island - no calling code
+    // GS - South Georgia and the South Sandwich Islands - "inhospitable collection of islands" - same flag and calling code as Falkland Islands
+    // HM - Heard Island and McDonald Islands - no calling code
+    // PN - Pitcairn - tiny population (56), same calling code as New Zealand
+    // TF - French Southern Territories - no calling code
+    // UM - United States Minor Outlying Islands - no calling code
+    // UPDATE the criteria of supported countries or territories (see issue 297)
+    // Have an iso2 code: https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2
+    // Have a country calling code: https://en.wikipedia.org/wiki/List_of_country_calling_codes
+    // Have a flag
+    // Must be supported by libphonenumber: https://github.com/googlei18n/libphonenumber
     // Update: converted objects to arrays to save bytes!
     // Update: added "priority" for countries with the same dialCode as others
     // Update: added array of area codes for countries with the same dialCode as others
@@ -1165,16 +1232,988 @@ JSON.stringify(result);
     //    Order (if >1 country with same dial code),
     //    Area codes (if >1 country with same dial code)
     // ]
-    var allCountries = [ [ "Afghanistan (‫افغانستان‬‎)", "af", "93" ], [ "Albania (Shqipëri)", "al", "355" ], [ "Algeria (‫الجزائر‬‎)", "dz", "213" ], [ "American Samoa", "as", "1684" ], [ "Andorra", "ad", "376" ], [ "Angola", "ao", "244" ], [ "Anguilla", "ai", "1264" ], [ "Antigua and Barbuda", "ag", "1268" ], [ "Argentina", "ar", "54" ], [ "Armenia (Հայաստան)", "am", "374" ], [ "Aruba", "aw", "297" ], [ "Australia", "au", "61" ], [ "Austria (Österreich)", "at", "43" ], [ "Azerbaijan (Azərbaycan)", "az", "994" ], [ "Bahamas", "bs", "1242" ], [ "Bahrain (‫البحرين‬‎)", "bh", "973" ], [ "Bangladesh (বাংলাদেশ)", "bd", "880" ], [ "Barbados", "bb", "1246" ], [ "Belarus (Беларусь)", "by", "375" ], [ "Belgium (België)", "be", "32" ], [ "Belize", "bz", "501" ], [ "Benin (Bénin)", "bj", "229" ], [ "Bermuda", "bm", "1441" ], [ "Bhutan (འབྲུག)", "bt", "975" ], [ "Bolivia", "bo", "591" ], [ "Bosnia and Herzegovina (Босна и Херцеговина)", "ba", "387" ], [ "Botswana", "bw", "267" ], [ "Brazil (Brasil)", "br", "55" ], [ "British Indian Ocean Territory", "io", "246" ], [ "British Virgin Islands", "vg", "1284" ], [ "Brunei", "bn", "673" ], [ "Bulgaria (България)", "bg", "359" ], [ "Burkina Faso", "bf", "226" ], [ "Burundi (Uburundi)", "bi", "257" ], [ "Cambodia (កម្ពុជា)", "kh", "855" ], [ "Cameroon (Cameroun)", "cm", "237" ], [ "Canada", "ca", "1", 1, [ "204", "226", "236", "249", "250", "289", "306", "343", "365", "387", "403", "416", "418", "431", "437", "438", "450", "506", "514", "519", "548", "579", "581", "587", "604", "613", "639", "647", "672", "705", "709", "742", "778", "780", "782", "807", "819", "825", "867", "873", "902", "905" ] ], [ "Cape Verde (Kabu Verdi)", "cv", "238" ], [ "Caribbean Netherlands", "bq", "599", 1 ], [ "Cayman Islands", "ky", "1345" ], [ "Central African Republic (République centrafricaine)", "cf", "236" ], [ "Chad (Tchad)", "td", "235" ], [ "Chile", "cl", "56" ], [ "China (中国)", "cn", "86" ], [ "Colombia", "co", "57" ], [ "Comoros (‫جزر القمر‬‎)", "km", "269" ], [ "Congo (DRC) (Jamhuri ya Kidemokrasia ya Kongo)", "cd", "243" ], [ "Congo (Republic) (Congo-Brazzaville)", "cg", "242" ], [ "Cook Islands", "ck", "682" ], [ "Costa Rica", "cr", "506" ], [ "Côte d’Ivoire", "ci", "225" ], [ "Croatia (Hrvatska)", "hr", "385" ], [ "Cuba", "cu", "53" ], [ "Curaçao", "cw", "599", 0 ], [ "Cyprus (Κύπρος)", "cy", "357" ], [ "Czech Republic (Česká republika)", "cz", "420" ], [ "Denmark (Danmark)", "dk", "45" ], [ "Djibouti", "dj", "253" ], [ "Dominica", "dm", "1767" ], [ "Dominican Republic (República Dominicana)", "do", "1", 2, [ "809", "829", "849" ] ], [ "Ecuador", "ec", "593" ], [ "Egypt (‫مصر‬‎)", "eg", "20" ], [ "El Salvador", "sv", "503" ], [ "Equatorial Guinea (Guinea Ecuatorial)", "gq", "240" ], [ "Eritrea", "er", "291" ], [ "Estonia (Eesti)", "ee", "372" ], [ "Ethiopia", "et", "251" ], [ "Falkland Islands (Islas Malvinas)", "fk", "500" ], [ "Faroe Islands (Føroyar)", "fo", "298" ], [ "Fiji", "fj", "679" ], [ "Finland (Suomi)", "fi", "358" ], [ "France", "fr", "33" ], [ "French Guiana (Guyane française)", "gf", "594" ], [ "French Polynesia (Polynésie française)", "pf", "689" ], [ "Gabon", "ga", "241" ], [ "Gambia", "gm", "220" ], [ "Georgia (საქართველო)", "ge", "995" ], [ "Germany (Deutschland)", "de", "49" ], [ "Ghana (Gaana)", "gh", "233" ], [ "Gibraltar", "gi", "350" ], [ "Greece (Ελλάδα)", "gr", "30" ], [ "Greenland (Kalaallit Nunaat)", "gl", "299" ], [ "Grenada", "gd", "1473" ], [ "Guadeloupe", "gp", "590", 0 ], [ "Guam", "gu", "1671" ], [ "Guatemala", "gt", "502" ], [ "Guinea (Guinée)", "gn", "224" ], [ "Guinea-Bissau (Guiné Bissau)", "gw", "245" ], [ "Guyana", "gy", "592" ], [ "Haiti", "ht", "509" ], [ "Honduras", "hn", "504" ], [ "Hong Kong (香港)", "hk", "852" ], [ "Hungary (Magyarország)", "hu", "36" ], [ "Iceland (Ísland)", "is", "354" ], [ "India (भारत)", "in", "91" ], [ "Indonesia", "id", "62" ], [ "Iran (‫ایران‬‎)", "ir", "98" ], [ "Iraq (‫العراق‬‎)", "iq", "964" ], [ "Ireland", "ie", "353" ], [ "Israel (‫ישראל‬‎)", "il", "972" ], [ "Italy (Italia)", "it", "39", 0 ], [ "Jamaica", "jm", "1876" ], [ "Japan (日本)", "jp", "81" ], [ "Jordan (‫الأردن‬‎)", "jo", "962" ], [ "Kazakhstan (Казахстан)", "kz", "7", 1 ], [ "Kenya", "ke", "254" ], [ "Kiribati", "ki", "686" ], [ "Kuwait (‫الكويت‬‎)", "kw", "965" ], [ "Kyrgyzstan (Кыргызстан)", "kg", "996" ], [ "Laos (ລາວ)", "la", "856" ], [ "Latvia (Latvija)", "lv", "371" ], [ "Lebanon (‫لبنان‬‎)", "lb", "961" ], [ "Lesotho", "ls", "266" ], [ "Liberia", "lr", "231" ], [ "Libya (‫ليبيا‬‎)", "ly", "218" ], [ "Liechtenstein", "li", "423" ], [ "Lithuania (Lietuva)", "lt", "370" ], [ "Luxembourg", "lu", "352" ], [ "Macau (澳門)", "mo", "853" ], [ "Macedonia (FYROM) (Македонија)", "mk", "389" ], [ "Madagascar (Madagasikara)", "mg", "261" ], [ "Malawi", "mw", "265" ], [ "Malaysia", "my", "60" ], [ "Maldives", "mv", "960" ], [ "Mali", "ml", "223" ], [ "Malta", "mt", "356" ], [ "Marshall Islands", "mh", "692" ], [ "Martinique", "mq", "596" ], [ "Mauritania (‫موريتانيا‬‎)", "mr", "222" ], [ "Mauritius (Moris)", "mu", "230" ], [ "Mexico (México)", "mx", "52" ], [ "Micronesia", "fm", "691" ], [ "Moldova (Republica Moldova)", "md", "373" ], [ "Monaco", "mc", "377" ], [ "Mongolia (Монгол)", "mn", "976" ], [ "Montenegro (Crna Gora)", "me", "382" ], [ "Montserrat", "ms", "1664" ], [ "Morocco (‫المغرب‬‎)", "ma", "212" ], [ "Mozambique (Moçambique)", "mz", "258" ], [ "Myanmar (Burma) (မြန်မာ)", "mm", "95" ], [ "Namibia (Namibië)", "na", "264" ], [ "Nauru", "nr", "674" ], [ "Nepal (नेपाल)", "np", "977" ], [ "Netherlands (Nederland)", "nl", "31" ], [ "New Caledonia (Nouvelle-Calédonie)", "nc", "687" ], [ "New Zealand", "nz", "64" ], [ "Nicaragua", "ni", "505" ], [ "Niger (Nijar)", "ne", "227" ], [ "Nigeria", "ng", "234" ], [ "Niue", "nu", "683" ], [ "Norfolk Island", "nf", "672" ], [ "North Korea (조선 민주주의 인민 공화국)", "kp", "850" ], [ "Northern Mariana Islands", "mp", "1670" ], [ "Norway (Norge)", "no", "47" ], [ "Oman (‫عُمان‬‎)", "om", "968" ], [ "Pakistan (‫پاکستان‬‎)", "pk", "92" ], [ "Palau", "pw", "680" ], [ "Palestine (‫فلسطين‬‎)", "ps", "970" ], [ "Panama (Panamá)", "pa", "507" ], [ "Papua New Guinea", "pg", "675" ], [ "Paraguay", "py", "595" ], [ "Peru (Perú)", "pe", "51" ], [ "Philippines", "ph", "63" ], [ "Poland (Polska)", "pl", "48" ], [ "Portugal", "pt", "351" ], [ "Puerto Rico", "pr", "1", 3, [ "787", "939" ] ], [ "Qatar (‫قطر‬‎)", "qa", "974" ], [ "Réunion (La Réunion)", "re", "262" ], [ "Romania (România)", "ro", "40" ], [ "Russia (Россия)", "ru", "7", 0 ], [ "Rwanda", "rw", "250" ], [ "Saint Barthélemy (Saint-Barthélemy)", "bl", "590", 1 ], [ "Saint Helena", "sh", "290" ], [ "Saint Kitts and Nevis", "kn", "1869" ], [ "Saint Lucia", "lc", "1758" ], [ "Saint Martin (Saint-Martin (partie française))", "mf", "590", 2 ], [ "Saint Pierre and Miquelon (Saint-Pierre-et-Miquelon)", "pm", "508" ], [ "Saint Vincent and the Grenadines", "vc", "1784" ], [ "Samoa", "ws", "685" ], [ "San Marino", "sm", "378" ], [ "São Tomé and Príncipe (São Tomé e Príncipe)", "st", "239" ], [ "Saudi Arabia (‫المملكة العربية السعودية‬‎)", "sa", "966" ], [ "Senegal (Sénégal)", "sn", "221" ], [ "Serbia (Србија)", "rs", "381" ], [ "Seychelles", "sc", "248" ], [ "Sierra Leone", "sl", "232" ], [ "Singapore", "sg", "65" ], [ "Sint Maarten", "sx", "1721" ], [ "Slovakia (Slovensko)", "sk", "421" ], [ "Slovenia (Slovenija)", "si", "386" ], [ "Solomon Islands", "sb", "677" ], [ "Somalia (Soomaaliya)", "so", "252" ], [ "South Africa", "za", "27" ], [ "South Korea (대한민국)", "kr", "82" ], [ "South Sudan (‫جنوب السودان‬‎)", "ss", "211" ], [ "Spain (España)", "es", "34" ], [ "Sri Lanka (ශ්‍රී ලංකාව)", "lk", "94" ], [ "Sudan (‫السودان‬‎)", "sd", "249" ], [ "Suriname", "sr", "597" ], [ "Swaziland", "sz", "268" ], [ "Sweden (Sverige)", "se", "46" ], [ "Switzerland (Schweiz)", "ch", "41" ], [ "Syria (‫سوريا‬‎)", "sy", "963" ], [ "Taiwan (台灣)", "tw", "886" ], [ "Tajikistan", "tj", "992" ], [ "Tanzania", "tz", "255" ], [ "Thailand (ไทย)", "th", "66" ], [ "Timor-Leste", "tl", "670" ], [ "Togo", "tg", "228" ], [ "Tokelau", "tk", "690" ], [ "Tonga", "to", "676" ], [ "Trinidad and Tobago", "tt", "1868" ], [ "Tunisia (‫تونس‬‎)", "tn", "216" ], [ "Turkey (Türkiye)", "tr", "90" ], [ "Turkmenistan", "tm", "993" ], [ "Turks and Caicos Islands", "tc", "1649" ], [ "Tuvalu", "tv", "688" ], [ "U.S. Virgin Islands", "vi", "1340" ], [ "Uganda", "ug", "256" ], [ "Ukraine (Україна)", "ua", "380" ], [ "United Arab Emirates (‫الإمارات العربية المتحدة‬‎)", "ae", "971" ], [ "United Kingdom", "gb", "44" ], [ "United States", "us", "1", 0 ], [ "Uruguay", "uy", "598" ], [ "Uzbekistan (Oʻzbekiston)", "uz", "998" ], [ "Vanuatu", "vu", "678" ], [ "Vatican City (Città del Vaticano)", "va", "39", 1 ], [ "Venezuela", "ve", "58" ], [ "Vietnam (Việt Nam)", "vn", "84" ], [ "Wallis and Futuna", "wf", "681" ], [ "Yemen (‫اليمن‬‎)", "ye", "967" ], [ "Zambia", "zm", "260" ], [ "Zimbabwe", "zw", "263" ] ];
-    // loop over all of the countries above
-    for (var i = 0; i < allCountries.length; i++) {
-        var c = allCountries[i];
-        allCountries[i] = {
-            name: c[0],
-            iso2: c[1],
-            dialCode: c[2],
-            priority: c[3] || 0,
-            areaCodes: c[4] || null
-        };
-    }
+    var allCountries;
+    var allCountriesDefault = [ [ "Afghanistan (‫افغانستان‬‎)", "af", "93" ], [ "Albania (Shqipëri)", "al", "355" ], [ "Algeria (‫الجزائر‬‎)", "dz", "213" ], [ "American Samoa", "as", "1684" ], [ "Andorra", "ad", "376" ], [ "Angola", "ao", "244" ], [ "Anguilla", "ai", "1264" ], [ "Antigua and Barbuda", "ag", "1268" ], [ "Argentina", "ar", "54" ], [ "Armenia (Հայաստան)", "am", "374" ], [ "Aruba", "aw", "297" ], [ "Australia", "au", "61", 0 ], [ "Austria (Österreich)", "at", "43" ], [ "Azerbaijan (Azərbaycan)", "az", "994" ], [ "Bahamas", "bs", "1242" ], [ "Bahrain (‫البحرين‬‎)", "bh", "973" ], [ "Bangladesh (বাংলাদেশ)", "bd", "880" ], [ "Barbados", "bb", "1246" ], [ "Belarus (Беларусь)", "by", "375" ], [ "Belgium (België)", "be", "32" ], [ "Belize", "bz", "501" ], [ "Benin (Bénin)", "bj", "229" ], [ "Bermuda", "bm", "1441" ], [ "Bhutan (འབྲུག)", "bt", "975" ], [ "Bolivia", "bo", "591" ], [ "Bosnia and Herzegovina (Босна и Херцеговина)", "ba", "387" ], [ "Botswana", "bw", "267" ], [ "Brazil (Brasil)", "br", "55" ], [ "British Indian Ocean Territory", "io", "246" ], [ "British Virgin Islands", "vg", "1284" ], [ "Brunei", "bn", "673" ], [ "Bulgaria (България)", "bg", "359" ], [ "Burkina Faso", "bf", "226" ], [ "Burundi (Uburundi)", "bi", "257" ], [ "Cambodia (កម្ពុជា)", "kh", "855" ], [ "Cameroon (Cameroun)", "cm", "237" ], [ "Canada", "ca", "1", 1, [ "204", "226", "236", "249", "250", "289", "306", "343", "365", "387", "403", "416", "418", "431", "437", "438", "450", "506", "514", "519", "548", "579", "581", "587", "604", "613", "639", "647", "672", "705", "709", "742", "778", "780", "782", "807", "819", "825", "867", "873", "902", "905" ] ], [ "Cape Verde (Kabu Verdi)", "cv", "238" ], [ "Caribbean Netherlands", "bq", "599", 1 ], [ "Cayman Islands", "ky", "1345" ], [ "Central African Republic (République centrafricaine)", "cf", "236" ], [ "Chad (Tchad)", "td", "235" ], [ "Chile", "cl", "56" ], [ "China (中国)", "cn", "86" ], [ "Christmas Island", "cx", "61", 2 ], [ "Cocos (Keeling) Islands", "cc", "61", 1 ], [ "Colombia", "co", "57" ], [ "Comoros (‫جزر القمر‬‎)", "km", "269" ], [ "Congo (DRC) (Jamhuri ya Kidemokrasia ya Kongo)", "cd", "243" ], [ "Congo (Republic) (Congo-Brazzaville)", "cg", "242" ], [ "Cook Islands", "ck", "682" ], [ "Costa Rica", "cr", "506" ], [ "Côte d’Ivoire", "ci", "225" ], [ "Croatia (Hrvatska)", "hr", "385" ], [ "Cuba", "cu", "53" ], [ "Curaçao", "cw", "599", 0 ], [ "Cyprus (Κύπρος)", "cy", "357" ], [ "Czech Republic (Česká republika)", "cz", "420" ], [ "Denmark (Danmark)", "dk", "45" ], [ "Djibouti", "dj", "253" ], [ "Dominica", "dm", "1767" ], [ "Dominican Republic (República Dominicana)", "do", "1", 2, [ "809", "829", "849" ] ], [ "Ecuador", "ec", "593" ], [ "Egypt (‫مصر‬‎)", "eg", "20" ], [ "El Salvador", "sv", "503" ], [ "Equatorial Guinea (Guinea Ecuatorial)", "gq", "240" ], [ "Eritrea", "er", "291" ], [ "Estonia (Eesti)", "ee", "372" ], [ "Ethiopia", "et", "251" ], [ "Falkland Islands (Islas Malvinas)", "fk", "500" ], [ "Faroe Islands (Føroyar)", "fo", "298" ], [ "Fiji", "fj", "679" ], [ "Finland (Suomi)", "fi", "358", 0 ], [ "France", "fr", "33" ], [ "French Guiana (Guyane française)", "gf", "594" ], [ "French Polynesia (Polynésie française)", "pf", "689" ], [ "Gabon", "ga", "241" ], [ "Gambia", "gm", "220" ], [ "Georgia (საქართველო)", "ge", "995" ], [ "Germany (Deutschland)", "de", "49" ], [ "Ghana (Gaana)", "gh", "233" ], [ "Gibraltar", "gi", "350" ], [ "Greece (Ελλάδα)", "gr", "30" ], [ "Greenland (Kalaallit Nunaat)", "gl", "299" ], [ "Grenada", "gd", "1473" ], [ "Guadeloupe", "gp", "590", 0 ], [ "Guam", "gu", "1671" ], [ "Guatemala", "gt", "502" ], [ "Guernsey", "gg", "44", 1 ], [ "Guinea (Guinée)", "gn", "224" ], [ "Guinea-Bissau (Guiné Bissau)", "gw", "245" ], [ "Guyana", "gy", "592" ], [ "Haiti", "ht", "509" ], [ "Honduras", "hn", "504" ], [ "Hong Kong (香港)", "hk", "852" ], [ "Hungary (Magyarország)", "hu", "36" ], [ "Iceland (Ísland)", "is", "354" ], [ "India (भारत)", "in", "91" ], [ "Indonesia", "id", "62" ], [ "Iran (‫ایران‬‎)", "ir", "98" ], [ "Iraq (‫العراق‬‎)", "iq", "964" ], [ "Ireland", "ie", "353" ], [ "Isle of Man", "im", "44", 2 ], [ "Israel (‫ישראל‬‎)", "il", "972" ], [ "Italy (Italia)", "it", "39", 0 ], [ "Jamaica", "jm", "1876" ], [ "Japan (日本)", "jp", "81" ], [ "Jersey", "je", "44", 3 ], [ "Jordan (‫الأردن‬‎)", "jo", "962" ], [ "Kazakhstan (Казахстан)", "kz", "7", 1 ], [ "Kenya", "ke", "254" ], [ "Kiribati", "ki", "686" ], [ "Kuwait (‫الكويت‬‎)", "kw", "965" ], [ "Kyrgyzstan (Кыргызстан)", "kg", "996" ], [ "Laos (ລາວ)", "la", "856" ], [ "Latvia (Latvija)", "lv", "371" ], [ "Lebanon (‫لبنان‬‎)", "lb", "961" ], [ "Lesotho", "ls", "266" ], [ "Liberia", "lr", "231" ], [ "Libya (‫ليبيا‬‎)", "ly", "218" ], [ "Liechtenstein", "li", "423" ], [ "Lithuania (Lietuva)", "lt", "370" ], [ "Luxembourg", "lu", "352" ], [ "Macau (澳門)", "mo", "853" ], [ "Macedonia (FYROM) (Македонија)", "mk", "389" ], [ "Madagascar (Madagasikara)", "mg", "261" ], [ "Malawi", "mw", "265" ], [ "Malaysia", "my", "60" ], [ "Maldives", "mv", "960" ], [ "Mali", "ml", "223" ], [ "Malta", "mt", "356" ], [ "Marshall Islands", "mh", "692" ], [ "Martinique", "mq", "596" ], [ "Mauritania (‫موريتانيا‬‎)", "mr", "222" ], [ "Mauritius (Moris)", "mu", "230" ], [ "Mayotte", "yt", "262", 1 ], [ "Mexico (México)", "mx", "52" ], [ "Micronesia", "fm", "691" ], [ "Moldova (Republica Moldova)", "md", "373" ], [ "Monaco", "mc", "377" ], [ "Mongolia (Монгол)", "mn", "976" ], [ "Montenegro (Crna Gora)", "me", "382" ], [ "Montserrat", "ms", "1664" ], [ "Morocco (‫المغرب‬‎)", "ma", "212", 0 ], [ "Mozambique (Moçambique)", "mz", "258" ], [ "Myanmar (Burma) (မြန်မာ)", "mm", "95" ], [ "Namibia (Namibië)", "na", "264" ], [ "Nauru", "nr", "674" ], [ "Nepal (नेपाल)", "np", "977" ], [ "Netherlands (Nederland)", "nl", "31" ], [ "New Caledonia (Nouvelle-Calédonie)", "nc", "687" ], [ "New Zealand", "nz", "64" ], [ "Nicaragua", "ni", "505" ], [ "Niger (Nijar)", "ne", "227" ], [ "Nigeria", "ng", "234" ], [ "Niue", "nu", "683" ], [ "Norfolk Island", "nf", "672" ], [ "North Korea (조선 민주주의 인민 공화국)", "kp", "850" ], [ "Northern Mariana Islands", "mp", "1670" ], [ "Norway (Norge)", "no", "47", 0 ], [ "Oman (‫عُمان‬‎)", "om", "968" ], [ "Pakistan (‫پاکستان‬‎)", "pk", "92" ], [ "Palau", "pw", "680" ], [ "Palestine (‫فلسطين‬‎)", "ps", "970" ], [ "Panama (Panamá)", "pa", "507" ], [ "Papua New Guinea", "pg", "675" ], [ "Paraguay", "py", "595" ], [ "Peru (Perú)", "pe", "51" ], [ "Philippines", "ph", "63" ], [ "Poland (Polska)", "pl", "48" ], [ "Portugal", "pt", "351" ], [ "Puerto Rico", "pr", "1", 3, [ "787", "939" ] ], [ "Qatar (‫قطر‬‎)", "qa", "974" ], [ "Réunion (La Réunion)", "re", "262", 0 ], [ "Romania (România)", "ro", "40" ], [ "Russia (Россия)", "ru", "7", 0 ], [ "Rwanda", "rw", "250" ], [ "Saint Barthélemy (Saint-Barthélemy)", "bl", "590", 1 ], [ "Saint Helena", "sh", "290" ], [ "Saint Kitts and Nevis", "kn", "1869" ], [ "Saint Lucia", "lc", "1758" ], [ "Saint Martin (Saint-Martin (partie française))", "mf", "590", 2 ], [ "Saint Pierre and Miquelon (Saint-Pierre-et-Miquelon)", "pm", "508" ], [ "Saint Vincent and the Grenadines", "vc", "1784" ], [ "Samoa", "ws", "685" ], [ "San Marino", "sm", "378" ], [ "São Tomé and Príncipe (São Tomé e Príncipe)", "st", "239" ], [ "Saudi Arabia (‫المملكة العربية السعودية‬‎)", "sa", "966" ], [ "Senegal (Sénégal)", "sn", "221" ], [ "Serbia (Србија)", "rs", "381" ], [ "Seychelles", "sc", "248" ], [ "Sierra Leone", "sl", "232" ], [ "Singapore", "sg", "65" ], [ "Sint Maarten", "sx", "1721" ], [ "Slovakia (Slovensko)", "sk", "421" ], [ "Slovenia (Slovenija)", "si", "386" ], [ "Solomon Islands", "sb", "677" ], [ "Somalia (Soomaaliya)", "so", "252" ], [ "South Africa", "za", "27" ], [ "South Korea (대한민국)", "kr", "82" ], [ "South Sudan (‫جنوب السودان‬‎)", "ss", "211" ], [ "Spain (España)", "es", "34" ], [ "Sri Lanka (ශ්‍රී ලංකාව)", "lk", "94" ], [ "Sudan (‫السودان‬‎)", "sd", "249" ], [ "Suriname", "sr", "597" ], [ "Svalbard and Jan Mayen", "sj", "47", 1 ], [ "Swaziland", "sz", "268" ], [ "Sweden (Sverige)", "se", "46" ], [ "Switzerland (Schweiz)", "ch", "41" ], [ "Syria (‫سوريا‬‎)", "sy", "963" ], [ "Taiwan (台灣)", "tw", "886" ], [ "Tajikistan", "tj", "992" ], [ "Tanzania", "tz", "255" ], [ "Thailand (ไทย)", "th", "66" ], [ "Timor-Leste", "tl", "670" ], [ "Togo", "tg", "228" ], [ "Tokelau", "tk", "690" ], [ "Tonga", "to", "676" ], [ "Trinidad and Tobago", "tt", "1868" ], [ "Tunisia (‫تونس‬‎)", "tn", "216" ], [ "Turkey (Türkiye)", "tr", "90" ], [ "Turkmenistan", "tm", "993" ], [ "Turks and Caicos Islands", "tc", "1649" ], [ "Tuvalu", "tv", "688" ], [ "U.S. Virgin Islands", "vi", "1340" ], [ "Uganda", "ug", "256" ], [ "Ukraine (Україна)", "ua", "380" ], [ "United Arab Emirates (‫الإمارات العربية المتحدة‬‎)", "ae", "971" ], [ "United Kingdom", "gb", "44", 0 ], [ "United States", "us", "1", 0 ], [ "Uruguay", "uy", "598" ], [ "Uzbekistan (Oʻzbekiston)", "uz", "998" ], [ "Vanuatu", "vu", "678" ], [ "Vatican City (Città del Vaticano)", "va", "39", 1 ], [ "Venezuela", "ve", "58" ], [ "Vietnam (Việt Nam)", "vn", "84" ], [ "Wallis and Futuna", "wf", "681" ], [ "Western Sahara (‫الصحراء الغربية‬‎)", "eh", "212", 1 ], [ "Yemen (‫اليمن‬‎)", "ye", "967" ], [ "Zambia", "zm", "260" ], [ "Zimbabwe", "zw", "263" ], [ "Åland Islands", "ax", "358", 1 ] ];
+
+    // multi-language translation source: google
+    // total of 242 countries per language
+    // native language translations in parenthesis are removed to save screen space
+    // in order to revert to default look just remove language param in intel tel options declaration
+    var allCountriesLang = [];
+    allCountriesLang["en"] = [
+        [ "Afghanistan", "af", "93" ],
+        [ "Albania", "al", "355" ],
+        [ "Algeria", "dz", "213" ],
+        [ "American Samoa", "as", "1684" ],
+        [ "Andorra", "ad", "376" ],
+        [ "Angola", "ao", "244" ],
+        [ "Anguilla", "ai", "1264" ],
+        [ "Antigua and Barbuda", "ag", "1268" ],
+        [ "Argentina", "ar", "54" ],
+        [ "Armenia", "am", "374" ],
+        [ "Aruba", "aw", "297" ],
+        [ "Australia", "au", "61", 0 ],
+        [ "Austria", "at", "43" ],
+        [ "Azerbaijan", "az", "994" ],
+        [ "Bahamas", "bs", "1242" ],
+        [ "Bahrain", "bh", "973" ],
+        [ "Bangladesh", "bd", "880" ],
+        [ "Barbados", "bb", "1246" ],
+        [ "Belarus", "by", "375" ],
+        [ "Belgium", "be", "32" ],
+        [ "Belize", "bz", "501" ],
+        [ "Benin", "bj", "229" ],
+        [ "Bermuda", "bm", "1441" ],
+        [ "Bhutan", "bt", "975" ],
+        [ "Bolivia", "bo", "591" ],
+        [ "Bosnia and Herzegovina", "ba", "387" ],
+        [ "Botswana", "bw", "267" ],
+        [ "Brazil", "br", "55" ],
+        [ "British Indian Ocean Territory", "io", "246" ],
+        [ "British Virgin Islands", "vg", "1284" ],
+        [ "Brunei", "bn", "673" ],
+        [ "Bulgaria", "bg", "359" ],
+        [ "Burkina Faso", "bf", "226" ],
+        [ "Burundi", "bi", "257" ],
+        [ "Cambodia", "kh", "855" ],
+        [ "Cameroon", "cm", "237" ],
+        [ "Canada", "ca", "1", 1, [ "204", "226", "236", "249", "250", "289", "306", "343", "365", "387", "403", "416", "418", "431", "437", "438", "450", "506", "514", "519", "548", "579", "581", "587", "604", "613", "639", "647", "672", "705", "709", "742", "778", "780", "782", "807", "819", "825", "867", "873", "902", "905" ] ],
+        [ "Cape Verde", "cv", "238" ],
+        [ "Caribbean Netherlands", "bq", "599", 1 ],
+        [ "Cayman Islands", "ky", "1345" ],
+        [ "Central African Republic", "cf", "236" ],
+        [ "Chad", "td", "235" ],
+        [ "Chile", "cl", "56" ],
+        [ "China", "cn", "86" ],
+        [ "Christmas Island", "cx", "61", 2 ],
+        [ "Cocos Islands", "cc", "61", 1 ],
+        [ "Colombia", "co", "57" ],
+        [ "Comoros", "km", "269" ],
+        [ "Congo", "cd", "243" ],
+        [ "Congo", "cg", "242" ],
+        [ "Cook Islands", "ck", "682" ],
+        [ "Costa Rica", "cr", "506" ],
+        [ "Cote d’Ivoire", "ci", "225" ],
+        [ "Croatia", "hr", "385" ],
+        [ "Cuba", "cu", "53" ],
+        [ "Curacao", "cw", "599", 0 ],
+        [ "Cyprus", "cy", "357" ],
+        [ "Czech Republic", "cz", "420" ],
+        [ "Denmark", "dk", "45" ],
+        [ "Djibouti", "dj", "253" ],
+        [ "Dominica", "dm", "1767" ],
+        [ "Dominican Republic", "do", "1", 2, [ "809", "829", "849" ] ],
+        [ "Ecuador", "ec", "593" ],
+        [ "Egypt", "eg", "20" ],
+        [ "El Salvador", "sv", "503" ],
+        [ "Equatorial Guinea", "gq", "240" ],
+        [ "Eritrea", "er", "291" ],
+        [ "Estonia", "ee", "372" ],
+        [ "Ethiopia", "et", "251" ],
+        [ "Falkland Islands", "fk", "500" ],
+        [ "Faroe Islands", "fo", "298" ],
+        [ "Fiji", "fj", "679" ],
+        [ "Finland", "fi", "358", 0 ],
+        [ "France", "fr", "33" ],
+        [ "French Guiana", "gf", "594" ],
+        [ "French Polynesia", "pf", "689" ],
+        [ "Gabon", "ga", "241" ],
+        [ "Gambia", "gm", "220" ],
+        [ "Georgia", "ge", "995" ],
+        [ "Germany", "de", "49" ],
+        [ "Ghana", "gh", "233" ],
+        [ "Gibraltar", "gi", "350" ],
+        [ "Greece", "gr", "30" ],
+        [ "Greenland", "gl", "299" ],
+        [ "Grenada", "gd", "1473" ],
+        [ "Guadeloupe", "gp", "590", 0 ],
+        [ "Guam", "gu", "1671" ],
+        [ "Guatemala", "gt", "502" ],
+        [ "Guernsey", "gg", "44", 1 ],
+        [ "Guinea", "gn", "224" ],
+        [ "Guinea-Bissau", "gw", "245" ],
+        [ "Guyana", "gy", "592" ],
+        [ "Haiti", "ht", "509" ],
+        [ "Honduras", "hn", "504" ],
+        [ "Hong Kong", "hk", "852" ],
+        [ "Hungary", "hu", "36" ],
+        [ "Iceland", "is", "354" ],
+        [ "India", "in", "91" ],
+        [ "Indonesia", "id", "62" ],
+        [ "Iran", "ir", "98" ],
+        [ "Iraq", "iq", "964" ],
+        [ "Ireland", "ie", "353" ],
+        [ "Isle of Man", "im", "44", 2 ],
+        [ "Israel", "il", "972" ],
+        [ "Italy", "it", "39", 0 ],
+        [ "Jamaica", "jm", "1876" ],
+        [ "Japan", "jp", "81" ],
+        [ "Jersey", "je", "44", 3 ],
+        [ "Jordan", "jo", "962" ],
+        [ "Kazakhstan", "kz", "7", 1 ],
+        [ "Kenya", "ke", "254" ],
+        [ "Kiribati", "ki", "686" ],
+        [ "Kuwait", "kw", "965" ],
+        [ "Kyrgyzstan", "kg", "996" ],
+        [ "Laos", "la", "856" ],
+        [ "Latvia", "lv", "371" ],
+        [ "Lebanon", "lb", "961" ],
+        [ "Lesotho", "ls", "266" ],
+        [ "Liberia", "lr", "231" ],
+        [ "Libya", "ly", "218" ],
+        [ "Liechtenstein", "li", "423" ],
+        [ "Lithuania", "lt", "370" ],
+        [ "Luxembourg", "lu", "352" ],
+        [ "Macau", "mo", "853" ],
+        [ "Macedonia", "mk", "389" ],
+        [ "Madagascar", "mg", "261" ],
+        [ "Malawi", "mw", "265" ],
+        [ "Malaysia", "my", "60" ],
+        [ "Maldives", "mv", "960" ],
+        [ "Mali", "ml", "223" ],
+        [ "Malta", "mt", "356" ],
+        [ "Marshall Islands", "mh", "692" ],
+        [ "Martinique", "mq", "596" ],
+        [ "Mauritania", "mr", "222" ],
+        [ "Mauritius", "mu", "230" ],
+        [ "Mayotte", "yt", "262", 1 ],
+        [ "Mexico", "mx", "52" ],
+        [ "Micronesia", "fm", "691" ],
+        [ "Moldova", "md", "373" ],
+        [ "Monaco", "mc", "377" ],
+        [ "Mongolia", "mn", "976" ],
+        [ "Montenegro", "me", "382" ],
+        [ "Montserrat", "ms", "1664" ],
+        [ "Morocco", "ma", "212", 0 ],
+        [ "Mozambique", "mz", "258" ],
+        [ "Myanmar", "mm", "95" ],
+        [ "Namibia", "na", "264" ],
+        [ "Nauru", "nr", "674" ],
+        [ "Nepal", "np", "977" ],
+        [ "Netherlands", "nl", "31" ],
+        [ "New Caledonia", "nc", "687" ],
+        [ "New Zealand", "nz", "64" ],
+        [ "Nicaragua", "ni", "505" ],
+        [ "Niger", "ne", "227" ],
+        [ "Nigeria", "ng", "234" ],
+        [ "Niue", "nu", "683" ],
+        [ "Norfolk Island", "nf", "672" ],
+        [ "North Korea", "kp", "850" ],
+        [ "Northern Mariana Islands", "mp", "1670" ],
+        [ "Norway", "no", "47", 0 ],
+        [ "Oman", "om", "968" ],
+        [ "Pakistan", "pk", "92" ],
+        [ "Palau", "pw", "680" ],
+        [ "Palestine", "ps", "970" ],
+        [ "Panama", "pa", "507" ],
+        [ "Papua New Guinea", "pg", "675" ],
+        [ "Paraguay", "py", "595" ],
+        [ "Peru", "pe", "51" ],
+        [ "Philippines", "ph", "63" ],
+        [ "Poland", "pl", "48" ],
+        [ "Portugal", "pt", "351" ],
+        [ "Puerto Rico", "pr", "1", 3, [ "787", "939" ] ],
+        [ "Qatar", "qa", "974" ],
+        [ "Reunion", "re", "262", 0 ],
+        [ "Romania", "ro", "40" ],
+        [ "Russia", "ru", "7", 0 ],
+        [ "Rwanda", "rw", "250" ],
+        [ "Saint Barthelemy", "bl", "590", 1 ],
+        [ "Saint Helena", "sh", "290" ],
+        [ "Saint Kitts and Nevis", "kn", "1869" ],
+        [ "Saint Lucia", "lc", "1758" ],
+        [ "Saint Martin", "mf", "590", 2 ],
+        [ "Saint Pierre and Miquelon", "pm", "508" ],
+        [ "Saint Vincent and the Grenadines", "vc", "1784" ],
+        [ "Samoa", "ws", "685" ],
+        [ "San Marino", "sm", "378" ],
+        [ "Sao Tome and Principe", "st", "239" ],
+        [ "Saudi Arabia", "sa", "966" ],
+        [ "Senegal", "sn", "221" ],
+        [ "Serbia", "rs", "381" ],
+        [ "Seychelles", "sc", "248" ],
+        [ "Sierra Leone", "sl", "232" ],
+        [ "Singapore", "sg", "65" ],
+        [ "Sint Maarten", "sx", "1721" ],
+        [ "Slovakia", "sk", "421" ],
+        [ "Slovenia", "si", "386" ],
+        [ "Solomon Islands", "sb", "677" ],
+        [ "Somalia", "so", "252" ],
+        [ "South Africa", "za", "27" ],
+        [ "South Korea", "kr", "82" ],
+        [ "South Sudan", "ss", "211" ],
+        [ "Spain", "es", "34" ],
+        [ "Sri Lanka", "lk", "94" ],
+        [ "Sudan", "sd", "249" ],
+        [ "Suriname", "sr", "597" ],
+        [ "Svalbard and Jan Mayen", "sj", "47", 1 ],
+        [ "Swaziland", "sz", "268" ],
+        [ "Sweden", "se", "46" ],
+        [ "Switzerland", "ch", "41" ],
+        [ "Syria", "sy", "963" ],
+        [ "Taiwan", "tw", "886" ],
+        [ "Tajikistan", "tj", "992" ],
+        [ "Tanzania", "tz", "255" ],
+        [ "Thailand", "th", "66" ],
+        [ "Timor-Leste", "tl", "670" ],
+        [ "Togo", "tg", "228" ],
+        [ "Tokelau", "tk", "690" ],
+        [ "Tonga", "to", "676" ],
+        [ "Trinidad and Tobago", "tt", "1868" ],
+        [ "Tunisia", "tn", "216" ],
+        [ "Turkey", "tr", "90" ],
+        [ "Turkmenistan", "tm", "993" ],
+        [ "Turks and Caicos Islands", "tc", "1649" ],
+        [ "Tuvalu", "tv", "688" ],
+        [ "U.S. Virgin Islands", "vi", "1340" ],
+        [ "Uganda", "ug", "256" ],
+        [ "Ukraine", "ua", "380" ],
+        [ "United Arab Emirates", "ae", "971" ],
+        [ "United Kingdom", "gb", "44", 0 ],
+        [ "United States", "us", "1", 0 ],
+        [ "Uruguay", "uy", "598" ],
+        [ "Uzbekistan", "uz", "998" ],
+        [ "Vanuatu", "vu", "678" ],
+        [ "Vatican City", "va", "39", 1 ],
+        [ "Venezuela", "ve", "58" ],
+        [ "Vietnam", "vn", "84" ],
+        [ "Wallis and Futuna", "wf", "681" ],
+        [ "Western Sahara", "eh", "212", 1 ],
+        [ "Yemen", "ye", "967" ],
+        [ "Zambia", "zm", "260" ],
+        [ "Zimbabwe", "zw", "263" ],
+        [ "Aland Islands", "ax", "358", 1 ]
+    ];
+    allCountriesLang["es"] = [
+        [ "Afganistán", "af", "93" ],
+        [ "Albania", "al", "355" ],
+        [ "Argelia", "dz", "213" ],
+        [ "American Samoa", "as", "1684" ],
+        [ "Andorra", "ad", "376" ],
+        [ "Angola", "ao", "244" ],
+        [ "Anguila", "ai", "1264" ],
+        [ "Antigua y Barbuda", "ag", "1268" ],
+        [ "Argentina", "ar", "54" ],
+        [ "Armenia", "am", "374" ],
+        [ "Aruba", "aw", "297" ],
+        [ "Australia", "au", "61", 0 ],
+        [ "Austria", "at", "43" ],
+        [ "Azerbaiyán", "az", "994" ],
+        [ "Bahamas", "bs", "1242" ],
+        [ "Bahrain", "bh", "973" ],
+        [ "Bangladesh", "bd", "880" ],
+        [ "Barbados", "bb", "1246" ],
+        [ "Bielorrusia", "by", "375" ],
+        [ "Bélgica", "be", "32" ],
+        [ "Belice", "bz", "501" ],
+        [ "Benin", "bj", "229" ],
+        [ "Bermuda", "bm", "1441" ],
+        [ "Bhutan", "bt", "975" ],
+        [ "Bolivia", "bo", "591" ],
+        [ "Bosnia y Herzegovina", "ba", "387" ],
+        [ "Botswana", "bw", "267" ],
+        [ "Brasil", "br", "55" ],
+        [ "Territorio Británico del Océano Índico", "io", "246" ],
+        [ "Islas Vírgenes Británicas", "vg", "1284" ],
+        [ "Brunei", "bn", "673" ],
+        [ "Bulgaria", "bg", "359" ],
+        [ "Burkina Faso", "bf", "226" ],
+        [ "Burundi", "bi", "257" ],
+        [ "Camboya", "kh", "855" ],
+        [ "Camerún", "cm", "237" ],
+        [ "Canadá", "ca", "1", 1, [ "204", "226", "236", "249", "250", "289", "306", "343", "365", "387", "403", "416", "418", "431", "437", "438", "450", "506", "514", "519", "548", "579", "581", "587", "604", "613", "639", "647", "672", "705", "709", "742", "778", "780", "782", "807", "819", "825", "867", "873", "902", "905" ] ],
+        [ "Cabo Verde", "cv", "238" ],
+        [ "Caribbean Países Bajos", "bq", "599", 1 ],
+        [ "Islas Cayman", "ky", "1345" ],
+        [ "República Centroafricana", "cf", "236" ],
+        [ "Chad", "td", "235" ],
+        [ "Chile", "cl", "56" ],
+        [ "China", "cn", "86" ],
+        [ "Isla de Navidad", "cx", "61", 2 ],
+        [ "Islas Cocos", "cc", "61", 1 ],
+        [ "Colombia ", "co", "57" ],
+        [ "Comoras", "km", "269" ],
+        [ "Congo", "cd", "243" ],
+        [ "Congo", "cg", "242" ],
+        [ "Islas Cook", "ck", "682" ],
+        [ "Costa Rica", "cr", "506" ],
+        [ "Costa de Marfil", "ci", "225" ],
+        [ "Croacia", "hr", "385" ],
+        [ "Cuba", "cu", "53" ],
+        [ "Curaçao", "cw", "599", 0 ],
+        [ "Chipre", "cy", "357" ],
+        [ "República Checa", "cz", "420" ],
+        [ "Dinamarca", "dk", "45" ],
+        [ "Djibouti", "dj", "253" ],
+        [ "Dominica", "dm", "1767" ],
+        [ "República Dominicana", "do", "1", 2, [ "809", "829", "849" ] ],
+        [ "Ecuador", "ec", "593" ],
+        [ "Egipto", "eg", "20" ],
+        [ "El Salvador", "sv", "503" ],
+        [ "Guinea Ecuatorial", "gq", "240" ],
+        [ "Eritrea", "er", "291" ],
+        [ "Estonia", "ee", "372" ],
+        [ "Etiopía", "et", "251" ],
+        [ "Islas Malvinas ", "fk", "500" ],
+        [ "Islas Feroe", "fo", "298" ],
+        [ "Fiji", "fj", "679" ],
+        [ "Finlandia", "fi", "358", 0 ],
+        [ "Francia", "fr", "33" ],
+        [ "Guayana", "gf", "594" ],
+        [ "Polinesia francesa", "pf", "689" ],
+        [ "Gabón", "ga", "241" ],
+        [ "Gambia", "gm", "220" ],
+        [ "Georgia", "ge", "995" ],
+        [ "Alemania", "de", "49" ],
+        [ "Ghana", "gh", "233" ],
+        [ "Gibraltar", "gi", "350" ],
+        [ "Grecia", "gr", "30" ],
+        [ "Groenlandia", "gl", "299" ],
+        [ "Granada", "gd", "1473" ],
+        [ "Guadalupe", "gp", "590", 0 ],
+        [ "Guam", "gu", "1671" ],
+        [ "Guatemala", "gt", "502" ],
+        [ "Guernsey", "gg", "44", 1 ],
+        [ "Guinea", "gn", "224" ],
+        [ "Guinea-Bissau", "gw", "245" ],
+        [ "Guyana", "gy", "592" ],
+        [ "Haití", "ht", "509" ],
+        [ "Honduras", "hn", "504" ],
+        [ "Hong Kong", "hk", "852" ],
+        [ "Hungría", "hu", "36" ],
+        [ "Islandia", "is", "354" ],
+        [ "La India", "in", "91" ],
+        [ "Indonesia", "id", "62" ],
+        [ "Irán", "ir", "98" ],
+        [ "Irak", "iq", "964" ],
+        [ "Irlanda", "ie", "353" ],
+        [ "Isla de Man", "im", "44", 2 ],
+        [ "Israel", "il", "972" ],
+        [ "Italia", "it", "39", 0 ],
+        [ "Jamaica", "jm", "1876" ],
+        [ "Japan", "jp", "81" ],
+        [ "Jersey", "je", "44", 3 ],
+        [ "Jordan", "jo", "962" ],
+        [ "Kazajstán", "kz", "7", 1 ],
+        [ "Kenia", "ke", "254" ],
+        [ "Kiribati", "ki", "686" ],
+        [ "Kuwait", "kw", "965" ],
+        [ "Kirguizistán", "kg", "996" ],
+        [ "Laos", "la", "856" ],
+        [ "Letonia", "lv", "371" ],
+        [ "Líbano", "lb", "961" ],
+        [ "Lesotho", "ls", "266" ],
+        [ "Liberia", "lr", "231" ],
+        [ "Libia", "ly", "218" ],
+        [ "Liechtenstein", "li", "423" ],
+        [ "Lituania ", "lt", "370" ],
+        [ "Luxemburgo", "lu", "352" ],
+        [ "Macao", "mo", "853" ],
+        [ "Macedonia", "mk", "389" ],
+        [ "Madagascar", "mg", "261" ],
+        [ "Malawi", "mw", "265" ],
+        [ "Malasia", "my", "60" ],
+        [ "Maldivas", "mv", "960" ],
+        [ "Mali", "ml", "223" ],
+        [ "Malta", "mt", "356" ],
+        [ "Islas Marshall", "mh", "692" ],
+        [ "Martinica", "mq", "596" ],
+        [ "Mauritania", "mr", "222" ],
+        [ "Mauricio", "mu", "230" ],
+        [ "Mayotte", "yt", "262", 1 ],
+        [ "Mexico", "mx", "52" ],
+        [ "Micronesia", "fm", "691" ],
+        [ "Moldova", "md", "373" ],
+        [ "Mónaco", "mc", "377" ],
+        [ "Mongolia", "mn", "976" ],
+        [ "Montenegro", "me", "382" ],
+        [ "Montserrat", "ms", "1664" ],
+        [ "Marruecos", "ma", "212", 0 ],
+        [ "Mozambique", "mz", "258" ],
+        [ "Myanmar", "mm", "95" ],
+        [ "Namibia", "na", "264" ],
+        [ "Nauru", "nr", "674" ],
+        [ "Nepal", "np", "977" ],
+        [ "Países Bajos", "nl", "31" ],
+        [ "Nueva Caledonia", "nc", "687" ],
+        [ "Nueva Zelanda", "nz", "64" ],
+        [ "Nicaragua", "ni", "505" ],
+        [ "Níger", "ne", "227" ],
+        [ "Nigeria", "ng", "234" ],
+        [ "Niue", "nu", "683" ],
+        [ "Isla Norfolk", "nf", "672" ],
+        [ "Corea del Norte", "kp", "850" ],
+        [ "Islas Marianas del Norte", "mp", "1670" ],
+        [ "Noruega", "no", "47", 0 ],
+        [ "Omán", "om", "968" ],
+        [ "Pakistán", "pk", "92" ],
+        [ "Palau", "pw", "680" ],
+        [ "Palestine", "ps", "970" ],
+        [ "Panamá", "pa", "507" ],
+        [ "Papúa Nueva Guinea", "pg", "675" ],
+        [ "Paraguay", "py", "595" ],
+        [ "Perú", "pe", "51" ],
+        [ "Filipinas", "ph", "63" ],
+        [ "Polonia", "pl", "48" ],
+        [ "Portugal", "pt", "351" ],
+        [ "Puerto Rico", "pr", "1", 3, [ "787", "939" ] ],
+        [ "Qatar", "qa", "974" ],
+        [ "Reunión", "re", "262", 0 ],
+        [ "Rumania", "ro", "40" ],
+        [ "Rusia", "ru", "7", 0 ],
+        [ "Ruanda", "rw", "250" ],
+        [ "San Bartolomé", "bl", "590", 1 ],
+        [ "Santa Helena", "sh", "290" ],
+        [ "San Cristóbal y Nieves", "kn", "1869" ],
+        [ "Santa Lucía", "lc", "1758" ],
+        [ "San Martín", "mf", "590", 2 ],
+        [ "San Pedro y Miquelón ", "pm", "508" ],
+        [ "San Vicente y las Granadinas", "vc", "1784" ],
+        [ "Samoa", "ws", "685" ],
+        [ "San Marino", "sm", "378" ],
+        [ "Santo Tomé y Príncipe", "st", "239" ],
+        [ "Arabia Saudita", "sa", "966" ],
+        [ "Senegal", "sn", "221" ],
+        [ "Serbia", "rs", "381" ],
+        [ "Seychelles", "sc", "248" ],
+        [ "Sierra Leona", "sl", "232" ],
+        [ "Singapur", "sg", "65" ],
+        [ "San Martín", "sx", "1721" ],
+        [ "Eslovaquia", "sk", "421" ],
+        [ "Eslovenia", "si", "386" ],
+        [ "Islas Salomón", "sb", "677" ],
+        [ "Somalia", "so", "252" ],
+        [ "África del Sur", "za", "27" ],
+        [ "Sur Corea", "kr", "82" ],
+        [ "Sudán del Sur", "ss", "211" ],
+        [ "España", "es", "34" ],
+        [ "Sri Lanka", "lk", "94" ],
+        [ "Sudán", "sd", "249" ],
+        [ "Surinam", "sr", "597" ],
+        [ "Svalbard y Jan Mayen", "sj", "47", 1 ],
+        [ "Swazilandia", "sz", "268" ],
+        [ "Suecia", "se", "46" ],
+        [ "Suiza", "ch", "41" ],
+        [ "Siria", "sy", "963" ],
+        [ "Taiwan", "tw", "886" ],
+        [ "Tayikistán", "tj", "992" ],
+        [ "Tanzania", "tz", "255" ],
+        [ "Tailandia", "th", "66" ],
+        [ "Timor Oriental", "tl", "670" ],
+        [ "Togo", "tg", "228" ],
+        [ "Tokelau", "tk", "690" ],
+        [ "Tonga", "to", "676" ],
+        [ "Trinidad y Tobago", "tt", "1868" ],
+        [ "Túnez", "tn", "216" ],
+        [ "Turquía", "tr", "90" ],
+        [ "Turkmenistán", "tm", "993" ],
+        [ "Turks y Caicos", "tc", "1649" ],
+        [ "Tuvalu", "tv", "688" ],
+        [ "Islas Vírgenes", "vi", "1340" ],
+        [ "Uganda", "ug", "256" ],
+        [ "Ucrania", "ua", "380" ],
+        [ "Emiratos Árabes Unidos", "ae", "971" ],
+        [ "Reino Unido", "gb", "44", 0 ],
+        [ "Estados Unidos", "us", "1", 0 ],
+        [ "Uruguay", "uy", "598" ],
+        [ "Uzbekistán", "uz", "998" ],
+        [ "Vanuatu", "vu", "678" ],
+        [ "Ciudad del Vaticano", "va", "39", 1 ],
+        [ "Venezuela", "ve", "58" ],
+        [ "Vietnam", "vn", "84" ],
+        [ "Wallis y Futuna", "wf", "681" ],
+        [ "Sahara Occidental", "eh", "212", 1 ],
+        [ "Yemen", "ye", "967" ],
+        [ "Zambia", "zm", "260" ],
+        [ "Zimbabwe", "zw", "263" ],
+        [ "Islas Åland", "ax", "358", 1 ]
+    ];
+    allCountriesLang["fr"] = [
+        [ "Afghanistan", "af", "93" ],
+        [ "Albanie", "al", "355" ],
+        [ "Algérie", "dz", "213" ],
+        [ "American Samoa", "as", "1684" ],
+        [ "Andorre", "ad", "376" ],
+        [ "Angola", "ao", "244" ],
+        [ "Anguilla", "ai", "1264" ],
+        [ "Antigua-et-Barbuda", "ag", "1268" ],
+        [ "Argentina", "ar", "54" ],
+        [ "Arménie", "am", "374" ],
+        [ "Aruba", "aw", "297" ],
+        [ "Australia", "au", "61", 0 ],
+        [ "Austria", "at", "43" ],
+        [ "Azerbaïdjan", "az", "994" ],
+        [ "Bahamas", "bs", "1242" ],
+        [ "Bahreïn", "bh", "973" ],
+        [ "Bangladesh", "bd", "880" ],
+        [ "Barbados", "bb", "1246" ],
+        [ "Biélorussie", "by", "375" ],
+        [ "Belgique", "be", "32" ],
+        [ "Belize", "bz", "501" ],
+        [ "Bénin", "bj", "229" ],
+        [ "Bermudes", "bm", "1441" ],
+        [ "Bhoutan", "bt", "975" ],
+        [ "Bolivie", "bo", "591" ],
+        [ "Bosnie-Herzégovine", "ba", "387" ],
+        [ "Botswana", "bw", "267" ],
+        [ "Brazil", "br", "55" ],
+        [ "Territoire Britannique de l'Océan Indien", "io", "246" ],
+        [ "Îles Vierges Britanniques", "vg", "1284" ],
+        [ "Brunei", "bn", "673" ],
+        [ "Bulgarie", "bg", "359" ],
+        [ "Burkina Faso", "bf", "226" ],
+        [ "Burundi", "bi", "257" ],
+        [ "Cambodia", "kh", "855" ],
+        [ "Cameroun", "cm", "237" ],
+        [ "Canada", "ca", "1", 1, [ "204", "226", "236", "249", "250", "289", "306", "343", "365", "387", "403", "416", "418", "431", "437", "438", "450", "506", "514", "519", "548", "579", "581", "587", "604", "613", "639", "647", "672", "705", "709", "742", "778", "780", "782", "807", "819", "825", "867", "873", "902", "905" ] ],
+        [ "Cap-Vert", "cv", "238" ],
+        [ "Caraïbes Pays-Bas", "bq", "599", 1 ],
+        [ "Îles Caïmans", "ky", "1345" ],
+        [ "République Centrafricaine", "cf", "236" ],
+        [ "Tchad", "td", "235" ],
+        [ "Chili", "cl", "56" ],
+        [ "Chine", "cn", "86" ],
+        [ "Christmas Island", "cx", "61", 2 ],
+        [ "Îles Cocos", "cc", "61", 1 ],
+        [ "Colombie", "co", "57" ],
+        [ "Comores", "km", "269" ],
+        [ "Congo", "cd", "243" ],
+        [ "Congo", "cg", "242" ],
+        [ "Îles Cook", "ck", "682" ],
+        [ "Costa Rica", "cr", "506" ],
+        [ "Côte d'Ivoire", "ci", "225" ],
+        [ "Croatie", "hr", "385" ],
+        [ "Cuba", "cu", "53" ],
+        [ "Curaçao", "cw", "599", 0 ],
+        [ "Chypre", "cy", "357" ],
+        [ "République Tchèque", "cz", "420" ],
+        [ "Danemark", "dk", "45" ],
+        [ "Djibouti", "dj", "253" ],
+        [ "Dominique", "dm", "1767" ],
+        [ "République Dominicaine", "do", "1", 2, [ "809", "829", "849" ] ],
+        [ "Equateur", "ec", "593" ],
+        [ "Egypte", "eg", "20" ],
+        [ "El Salvador", "sv", "503" ],
+        [ "Guinée équatoriale", "gq", "240" ],
+        [ "Erythrée", "er", "291" ],
+        [ "Estonie", "ee", "372" ],
+        [ "Ethiopie", "et", "251" ],
+        [ "Îles Falkland ", "fk", "500" ],
+        [ "Îles Féroé", "fo", "298" ],
+        [ "Fidji", "fj", "679" ],
+        [ "Finlande", "fi", "358", 0 ],
+        [ "France", "fr", "33" ],
+        [ "Guyane Française", "gf", "594" ],
+        [ "Polynésie Française", "pf", "689" ],
+        [ "Gabon", "ga", "241" ],
+        [ "Gambie", "gm", "220" ],
+        [ "Georgia", "ge", "995" ],
+        [ "Allemagne", "de", "49" ],
+        [ "Ghana", "gh", "233" ],
+        [ "Gibraltar", "gi", "350" ],
+        [ "Grèce", "gr", "30" ],
+        [ "Groenland", "gl", "299" ],
+        [ "Grenade", "gd", "1473" ],
+        [ "Guadeloupe", "gp", "590", 0 ],
+        [ "Guam", "gu", "1671" ],
+        [ "Guatemala", "gt", "502" ],
+        [ "Guernesey", "gg", "44", 1 ],
+        [ "Guinée", "gn", "224" ],
+        [ "Guinée-Bissau", "gw", "245" ],
+        [ "Guyana", "gy", "592" ],
+        [ "Haïti", "ht", "509" ],
+        [ "Honduras", "hn", "504" ],
+        [ "Hong Kong", "hk", "852" ],
+        [ "Hongrie", "hu", "36" ],
+        [ "Iceland", "is", "354" ],
+        [ "India", "in", "91" ],
+        [ "Indonésie", "id", "62" ],
+        [ "Iran", "ir", "98" ],
+        [ "Irak", "iq", "964" ],
+        [ "Irlande", "ie", "353" ],
+        [ "Isle of Man", "im", "44", 2 ],
+        [ "Israël", "il", "972" ],
+        [ "Italie", "it", "39", 0 ],
+        [ "Jamaica", "jm", "1876" ],
+        [ "Japon", "jp", "81" ],
+        [ "Jersey", "je", "44", 3 ],
+        [ "Jordan", "jo", "962" ],
+        [ "Kazakhstan", "kz", "7", 1 ],
+        [ "Kenya", "ke", "254" ],
+        [ "Kiribati", "ki", "686" ],
+        [ "Koweït", "kw", "965" ],
+        [ "Kirghizistan", "kg", "996" ],
+        [ "Laos", "la", "856" ],
+        [ "Lettonie", "lv", "371" ],
+        [ "Liban", "lb", "961" ],
+        [ "Lesotho", "ls", "266" ],
+        [ "Liberia", "lr", "231" ],
+        [ "Libye", "ly", "218" ],
+        [ "Liechtenstein", "li", "423" ],
+        [ "Lituanie", "lt", "370" ],
+        [ "Luxembourg", "lu", "352" ],
+        [ "Macau", "mo", "853" ],
+        [ "Macédoine", "mk", "389" ],
+        [ "Madagascar", "mg", "261" ],
+        [ "Malawi", "mw", "265" ],
+        [ "Malaisie", "my", "60" ],
+        [ "Maldives", "mv", "960" ],
+        [ "Mali", "ml", "223" ],
+        [ "Malte", "mt", "356" ],
+        [ "Îles Marshall", "mh", "692" ],
+        [ "Martinique", "mq", "596" ],
+        [ "Mauritanie", "mr", "222" ],
+        [ "Maurice", "mu", "230" ],
+        [ "Mayotte", "yt", "262", 1 ],
+        [ "Mexico", "mx", "52" ],
+        [ "Micronésie", "fm", "691" ],
+        [ "Moldova", "md", "373" ],
+        [ "Monaco", "mc", "377" ],
+        [ "Mongolie", "mn", "976" ],
+        [ "Monténégro", "me", "382" ],
+        [ "Montserrat", "ms", "1664" ],
+        [ "Maroc", "ma", "212", 0 ],
+        [ "Mozambique", "mz", "258" ],
+        [ "Myanmar", "mm", "95" ],
+        [ "Namibia", "na", "264" ],
+        [ "Nauru", "nr", "674" ],
+        [ "Népal", "np", "977" ],
+        [ "Pays-Bas", "nl", "31" ],
+        [ "Nouvelle-Calédonie", "nc", "687" ],
+        [ "Nouvelle-Zélande", "nz", "64" ],
+        [ "Nicaragua", "ni", "505" ],
+        [ "Niger", "ne", "227" ],
+        [ "Nigeria", "ng", "234" ],
+        [ "Niue", "nu", "683" ],
+        [ "Norfolk Island", "nf", "672" ],
+        [ "Corée du Nord", "kp", "850" ],
+        [ "Îles Mariannes du Nord", "mp", "1670" ],
+        [ "Norvège", "no", "47", 0 ],
+        [ "Oman", "om", "968" ],
+        [ "Pakistan", "pk", "92" ],
+        [ "Palau", "pw", "680" ],
+        [ "Palestine", "ps", "970" ],
+        [ "Panama", "pa", "507" ],
+        [ "Papouasie-Nouvelle-Guinée", "pg", "675" ],
+        [ "Paraguay", "py", "595" ],
+        [ "Pérou", "pe", "51" ],
+        [ "Philippines", "ph", "63" ],
+        [ "Pologne", "pl", "48" ],
+        [ "Portugal", "pt", "351" ],
+        [ "Puerto Rico", "pr", "1", 3, [ "787", "939" ] ],
+        [ "Qatar", "qa", "974" ],
+        [ "Réunion", "re", "262", 0 ],
+        [ "Roumanie", "ro", "40" ],
+        [ "Russie", "ru", "7", 0 ],
+        [ "Rwanda", "rw", "250" ],
+        [ "Saint Barthélemy", "bl", "590", 1 ],
+        [ "Saint Helena", "sh", "290" ],
+        [ "Saint-Kitts-et-Nevis", "kn", "1869" ],
+        [ "Saint Lucia", "lc", "1758" ],
+        [ "Saint Martin", "mf", "590", 2 ],
+        [ "Saint-Pierre-et-Miquelon", "pm", "508" ],
+        [ "Saint-Vincent-et-les-Grenadines", "vc", "1784" ],
+        [ "Samoa", "ws", "685" ],
+        [ "San Marino", "sm", "378" ],
+        [ "São Tomé et Príncipe", "st", "239" ],
+        [ "Arabie Saoudite", "sa", "966" ],
+        [ "Sénégal", "sn", "221" ],
+        [ "Serbie", "rs", "381" ],
+        [ "Seychelles", "sc", "248" ],
+        [ "Sierra Leone", "sl", "232" ],
+        [ "Singapour", "sg", "65" ],
+        [ "Sint Maarten", "sx", "1721" ],
+        [ "Slovaquie", "sk", "421" ],
+        [ "Slovénie", "si", "386" ],
+        [ "Îles Salomon", "sb", "677" ],
+        [ "Somalie", "so", "252" ],
+        [ "Afrique du Sud", "za", "27" ],
+        [ "South Corée", "kr", "82" ],
+        [ "Sud-Soudan", "ss", "211" ],
+        [ "Espagne", "es", "34" ],
+        [ "Sri Lanka", "lk", "94" ],
+        [ "Soudan", "sd", "249" ],
+        [ "Suriname", "sr", "597" ],
+        [ "Svalbard et Jan Mayen", "sj", "47", 1 ],
+        [ "Swaziland", "sz", "268" ],
+        [ "Suède", "se", "46" ],
+        [ "Suisse", "ch", "41" ],
+        [ "Syrie", "sy", "963" ],
+        [ "Taiwan", "tw", "886" ],
+        [ "Tadjikistan", "tj", "992" ],
+        [ "Tanzanie", "tz", "255" ],
+        [ "Thaïlande", "th", "66" ],
+        [ "Timor-Leste", "tl", "670" ],
+        [ "Togo", "tg", "228" ],
+        [ "Tokelau", "tk", "690" ],
+        [ "Tonga", "to", "676" ],
+        [ "Trinité-et-Tobago", "tt", "1868" ],
+        [ "Tunisie", "tn", "216" ],
+        [ "Turquie", "tr", "90" ],
+        [ "Turkménistan", "tm", "993" ],
+        [ "Îles Turques et Caïques", "tc", "1649" ],
+        [ "Tuvalu", "tv", "688" ],
+        [ "US Îles Vierges", "vi", "1340" ],
+        [ "Ouganda", "ug", "256" ],
+        [ "Ukraine", "ua", "380" ],
+        [ "Emirats Arabes Unis", "ae", "971" ],
+        [ "Royaume-Uni", "gb", "44", 0 ],
+        [ "Etats-Unis", "us", "1", 0 ],
+        [ "Uruguay", "uy", "598" ],
+        [ "Ouzbékistan", "uz", "998" ],
+        [ "Vanuatu", "vu", "678" ],
+        [ "Vatican", "va", "39", 1 ],
+        [ "Venezuela", "ve", "58" ],
+        [ "Vietnam", "vn", "84" ],
+        [ "Wallis et Futuna", "wf", "681" ],
+        [ "Sahara occidental", "eh", "212", 1 ],
+        [ "Yémen", "ye", "967" ],
+        [ "Zambie", "zm", "260" ],
+        [ "Zimbabwe", "zw", "263" ],
+        [ "Îles Åland", "ax", "358", 1 ]
+    ];
+    allCountriesLang["zh"] = [
+        [ "阿富汗", "af", "93" ],
+        [ "阿尔巴尼亚", "al", "355" ],
+        [ "阿尔及利亚", "dz", "213" ],
+        [ "美国萨摩亚", "as", "1684" ],
+        [ "安道尔", "ad", "376" ],
+        [ "安哥拉", "ao", "244" ],
+        [ "安圭拉", "ai", "1264" ],
+        [ "安提瓜和巴布达", "ag", "1268" ],
+        [ "阿根廷", "ar", "54" ],
+        [ "亚美尼亚", "am", "374" ],
+        [ "阿鲁巴", "aw", "297" ],
+        [ "澳大利亚", "au", "61", 0 ],
+        [ "奥地利", "at", "43" ],
+        [ "阿塞拜疆", "az", "994" ],
+        [ "巴哈马", "bs", "1242" ],
+        [ "巴林", "bh", "973" ],
+        [ "孟", "bd", "880" ],
+        [ "巴巴多斯", "bb", "1246" ],
+        [ "白俄罗斯", "by", "375" ],
+        [ "比利时", "be", "32" ],
+        [ "伯利兹", "bz", "501" ],
+        [ "贝宁", "bj", "229" ],
+        [ "百慕大", "bm", "1441" ],
+        [ "不丹", "bt", "975" ],
+        [ "玻利维亚", "bo", "591" ],
+        [ "波斯尼亚和黑塞哥维那", "ba", "387" ],
+        [ "博茨瓦纳", "bw", "267" ],
+        [ "巴西", "br", "55" ],
+        [ "英属印度洋领地", "io", "246" ],
+        [ "英属维尔京群岛", "vg", "1284" ],
+        [ "文莱", "bn", "673" ],
+        [ "保加利亚", "bg", "359" ],
+        [ "布基纳法索", "bf", "226" ],
+        [ "布隆迪", "bi", "257" ],
+        [ "柬埔寨", "kh", "855" ],
+        [ "喀", "cm", "237" ],
+        [ "加拿大", "ca", "1", 1, [ "204", "226", "236", "249", "250", "289", "306", "343", "365", "387", "403", "416", "418", "431", "437", "438", "450", "506", "514", "519", "548", "579", "581", "587", "604", "613", "639", "647", "672", "705", "709", "742", "778", "780", "782", "807", "819", "825", "867", "873", "902", "905" ] ],
+        [ "佛得角", "cv", "238" ],
+        [ "加勒比海荷兰", "bq", "599", 1 ],
+        [ "开曼群岛", "ky", "1345" ],
+        [ "中非共和国", "cf", "236" ],
+        [ "乍得", "td", "235" ],
+        [ "智利", "cl", "56" ],
+        [ "中国", "cn", "86" ],
+        [ "圣诞岛", "cx", "61", 2 ],
+        [ "科科斯群岛", "cc", "61", 1 ],
+        [ "哥伦比亚", "co", "57" ],
+        [ "科摩罗", "km", "269" ],
+        [ "刚果", "cd", "243" ],
+        [ "刚果", "cg", "242" ],
+        [ "库克群岛", "ck", "682" ],
+        [ "哥斯达黎加", "cr", "506" ],
+        [ "科特迪瓦", "ci", "225" ],
+        [ "克罗地亚", "hr", "385" ],
+        [ "古巴", "cu", "53" ],
+        [ "库拉索", "cw", "599", 0 ],
+        [ "塞浦路斯", "cy", "357" ],
+        [ "捷", "cz", "420" ],
+        [ "丹麦", "dk", "45" ],
+        [ "吉布提", "dj", "253" ],
+        [ "多米尼克", "dm", "1767" ],
+        [ "多明尼加共和国", "do", "1", 2, [ "809", "829", "849" ] ],
+        [ "厄瓜多尔", "ec", "593" ],
+        [ "埃及", "eg", "20" ],
+        [ "萨尔瓦多", "sv", "503" ],
+        [ "赤道几内亚", "gq", "240" ],
+        [ "厄", "er", "291" ],
+        [ "爱沙尼亚", "ee", "372" ],
+        [ "埃塞俄比亚", "et", "251" ],
+        [ "福克兰群岛", "fk", "500" ],
+        [ "法罗群岛", "fo", "298" ],
+        [ "斐济", "fj", "679" ],
+        [ "芬兰", "fi", "358", 0 ],
+        [ "法国", "fr", "33" ],
+        [ "法属圭亚那", "gf", "594" ],
+        [ "法属波利尼西亚", "pf", "689" ],
+        [ "加蓬", "ga", "241" ],
+        [ "冈比亚", "gm", "220" ],
+        [ "格", "ge", "995" ],
+        [ "德", "de", "49" ],
+        [ "加纳", "gh", "233" ],
+        [ "直布罗陀", "gi", "350" ],
+        [ "希腊", "gr", "30" ],
+        [ "格陵兰", "gl", "299" ],
+        [ "格林纳达", "gd", "1473" ],
+        [ "瓜德罗普岛", "gp", "590", 0 ],
+        [ "关岛", "gu", "1671" ],
+        [ "危地马拉", "gt", "502" ],
+        [ "根西", "gg", "44", 1 ],
+        [ "几内亚", "gn", "224" ],
+        [ "几内亚比绍", "gw", "245" ],
+        [ "圭亚那", "gy", "592" ],
+        [ "海地", "ht", "509" ],
+        [ "洪都拉斯", "hn", "504" ],
+        [ "香港", "hk", "852" ],
+        [ "匈牙利", "hu", "36" ],
+        [ "冰岛", "is", "354" ],
+        [ "印度", "in", "91" ],
+        [ "印尼", "id", "62" ],
+        [ "伊朗", "ir", "98" ],
+        [ "伊拉克", "iq", "964" ],
+        [ "爱尔兰", "ie", "353" ],
+        [ "马恩岛", "im", "44", 2 ],
+        [ "以色列", "il", "972" ],
+        [ "意大利", "it", "39", 0 ],
+        [ "牙买加", "jm", "1876" ],
+        [ "日本制造", "jp", "81" ],
+        [ "泽西", "je", "44", 3 ],
+        [ "乔丹", "jo", "962" ],
+        [ "哈", "kz", "7", 1 ],
+        [ "肯尼亚", "ke", "254" ],
+        [ "基里巴斯", "ki", "686" ],
+        [ "科威特", "kw", "965" ],
+        [ "吉", "kg", "996" ],
+        [ "老挝", "la", "856" ],
+        [ "拉脱维亚", "lv", "371" ],
+        [ "黎巴嫩", "lb", "961" ],
+        [ "莱索托", "ls", "266" ],
+        [ "利比里亚", "lr", "231" ],
+        [ "利比亚", "ly", "218" ],
+        [ "列支敦士登", "li", "423" ],
+        [ "立陶宛", "lt", "370" ],
+        [ "卢森堡", "lu", "352" ],
+        [ "澳门", "mo", "853" ],
+        [ "马其顿共和国", "mk", "389" ],
+        [ "马达加斯加", "mg", "261" ],
+        [ "马拉维", "mw", "265" ],
+        [ "马来西亚", "my", "60" ],
+        [ "马尔代夫", "mv", "960" ],
+        [ "马里", "ml", "223" ],
+        [ "马耳他", "mt", "356" ],
+        [ "马绍尔群岛", "mh", "692" ],
+        [ "马提尼克岛", "mq", "596" ],
+        [ "毛里塔尼亚", "mr", "222" ],
+        [ "毛里求斯", "mu", "230" ],
+        [ "马约特岛", "yt", "262", 1 ],
+        [ "墨西哥", "mx", "52" ],
+        [ "密", "fm", "691" ],
+        [ "摩的", "md", "373" ],
+        [ "摩纳哥", "mc", "377" ],
+        [ "蒙古", "mn", "976" ],
+        [ "黑山", "me", "382" ],
+        [ "蒙特塞拉特", "ms", "1664" ],
+        [ "摩洛哥", "ma", "212", 0 ],
+        [ "莫桑比克", "mz", "258" ],
+        [ "缅甸", "mm", "95" ],
+        [ "纳米比亚", "na", "264" ],
+        [ "瑙鲁", "nr", "674" ],
+        [ "尼泊尔", "np", "977" ],
+        [ "荷兰", "nl", "31" ],
+        [ "新喀里多尼亚", "nc", "687" ],
+        [ "新西兰", "nz", "64" ],
+        [ "尼加拉瓜", "ni", "505" ],
+        [ "尼日尔", "ne", "227" ],
+        [ "尼", "ng", "234" ],
+        [ "纽埃", "nu", "683" ],
+        [ "诺福克岛", "nf", "672" ],
+        [ "朝鲜", "kp", "850" ],
+        [ "北马里亚纳群岛", "mp", "1670" ],
+        [ "挪威", "no", "47", 0 ],
+        [ "阿曼", "om", "968" ],
+        [ "巴", "pk", "92" ],
+        [ "帕劳", "pw", "680" ],
+        [ "巴勒斯坦", "ps", "970" ],
+        [ "巴拿马", "pa", "507" ],
+        [ "巴布亚新几内亚", "pg", "675" ],
+        [ "巴拉圭", "py", "595" ],
+        [ "秘鲁", "pe", "51" ],
+        [ "菲律宾", "ph", "63" ],
+        [ "波兰", "pl", "48" ],
+        [ "葡萄牙", "pt", "351" ],
+        [ "波多黎各", "pr", "1", 3, [ "787", "939" ] ],
+        [ "卡塔尔", "qa", "974" ],
+        [ "重逢", "re", "262", 0 ],
+        [ "罗马尼亚", "ro", "40" ],
+        [ "俄罗斯", "ru", "7", 0 ],
+        [ "卢旺达", "rw", "250" ],
+        [ "圣巴泰勒米", "bl", "590", 1 ],
+        [ "圣赫勒拿", "sh", "290" ],
+        [ "圣基茨和尼维斯", "kn", "1869" ],
+        [ "圣卢西亚", "lc", "1758" ],
+        [ "圣马丁", "mf", "590", 2 ],
+        [ "圣皮埃尔和密克隆", "pm", "508" ],
+        [ "圣文森特和格林纳丁斯", "vc", "1784" ],
+        [ "萨摩亚", "ws", "685" ],
+        [ "圣马力诺", "sm", "378" ],
+        [ "圣多美和普林西比", "st", "239" ],
+        [ "沙特阿拉伯", "sa", "966" ],
+        [ "塞内加尔", "sn", "221" ],
+        [ "塞尔维亚", "rs", "381" ],
+        [ "塞舌尔", "sc", "248" ],
+        [ "塞拉利昂", "sl", "232" ],
+        [ "新加坡", "sg", "65" ],
+        [ "圣马丁", "sx", "1721" ],
+        [ "斯洛伐克", "sk", "421" ],
+        [ "斯洛文尼亚", "si", "386" ],
+        [ "所罗门群岛", "sb", "677" ],
+        [ "索马里", "so", "252" ],
+        [ "南非", "za", "27" ],
+        [ "南韩国", "kr", "82" ],
+        [ "南苏丹", "ss", "211" ],
+        [ "西班牙", "es", "34" ],
+        [ "斯", "lk", "94" ],
+        [ "苏丹红", "sd", "249" ],
+        [ "苏里南", "sr", "597" ],
+        [ "斯瓦尔巴和扬马延岛", "sj", "47", 1 ],
+        [ "斯威士兰", "sz", "268" ],
+        [ "瑞典", "se", "46" ],
+        [ "瑞士", "ch", "41" ],
+        [ "叙利亚", "sy", "963" ],
+        [ "台湾", "tw", "886" ],
+        [ "塔", "tj", "992" ],
+        [ "坦桑尼亚", "tz", "255" ],
+        [ "泰国", "th", "66" ],
+        [ "东帝汶", "tl", "670" ],
+        [ "多哥", "tg", "228" ],
+        [ "托克劳", "tk", "690" ],
+        [ "汤加", "to", "676" ],
+        [ "特立尼达和多巴哥", "tt", "1868" ],
+        [ "突尼斯", "tn", "216" ],
+        [ "土耳其", "tr", "90" ],
+        [ "土库曼斯坦", "tm", "993" ],
+        [ "特克斯和凯科斯群岛", "tc", "1649" ],
+        [ "图瓦卢", "tv", "688" ],
+        [ "美国维尔京群岛", "vi", "1340" ],
+        [ "乌干达", "ug", "256" ],
+        [ "乌克兰", "ua", "380" ],
+        [ "阿联酋", "ae", "971" ],
+        [ "英国", "gb", "44", 0 ],
+        [ "美的", "us", "1", 0 ],
+        [ "乌拉圭", "uy", "598" ],
+        [ "乌兹别克斯坦", "uz", "998" ],
+        [ "瓦", "vu", "678" ],
+        [ "梵蒂冈", "va", "39", 1 ],
+        [ "委内瑞拉", "ve", "58" ],
+        [ "越南", "vn", "84" ],
+        [ "瓦利斯和富图纳群岛", "wf", "681" ],
+        [ "西撒哈拉", "eh", "212", 1 ],
+        [ "也门", "ye", "967" ],
+        [ "赞", "zm", "260" ],
+        [ "津巴布韦", "zw", "263" ],
+        [ "奥兰群岛", "ax", "358", 1 ]
+    ];
 });
