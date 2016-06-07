@@ -1128,6 +1128,9 @@ https://github.com/Bluefieldscom/intl-tel-input.git
         },
         // this is called when countries must be initialized
         initCountriesList: function() {
+                if (allCountries && allCountries.length && allCountries[0] && allCountries[0].name)
+                    return false; //already initialized
+
                 allCountries = this.options.language ? allCountriesLang[this.options.language] : allCountriesDefault;
                 // loop over all of the countries above
                 for (var i = 0; i < allCountries.length; i++) {
